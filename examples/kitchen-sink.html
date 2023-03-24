@@ -1,0 +1,76 @@
+<html>
+<head></head>
+<body>
+    <script type="module">
+
+        import {open, ABORT} from "../lmdb-localstorage.js"
+
+        const db = open("dummy",{useVersions:true}),
+            db2 = db.openDB("child");
+        await db.clearAsync();
+        await db2.clearAsync();
+        await db.put(true,1);
+        await db2.put(true,1);
+        await db.put("a",[1,2,3]);
+        await db.put(Symbol.for('a symbol'),"a symbol");
+        await db.put(false,[1,2]);
+        await db.put(1,1);
+        await db.put([1,"a"],"1a");
+        await db.put([1,2],"12");
+        await db.put([1,"b"],"1b");
+        //await db.put(null,"ok");
+        await db.remove(true);
+        await db.remove(Symbol.for('a symbol'));
+        await db.remove([1,2]);
+        db.transaction(() => {
+            db.putSync("t1a","t1a");
+            db.putSync("t1b","t1b");
+        });
+        console.log(db.commited().then(() => console.log("commited")))
+        db.transactionSync(() => {
+            db.putSync("t1a-s","t1a-s");
+            db.putSync("t1b-s","t1b-s");
+        });
+        db.transactionSync(async () => {
+            db.putSync("t1a-a","t1a-a");
+            return ABORT;
+        }).catch((e) => {
+            console.log(e)
+        });
+        db.transaction(() => {
+            db.putSync("t2a","t2a");
+            db.removeSync("t1a");
+            throw new Error("test error")
+        }).catch((e) => {
+            console.log(e);
+        });
+        db.transaction(() => {
+            db.putSync("t3a","t3a");
+            db2.removeSync(true);
+            throw new Error("test error")
+        }).catch((e) => {
+            console.log(e);
+        });
+        try {
+            db.transactionSync(() => {
+                db.putSync("t2a-s","t2a-s");
+                db.removeSync("t1a-s");
+                throw new Error("test error sync")
+            });
+        } catch(e) {
+            console.log(e);
+        }
+        await db.transaction(() => {
+            db.putSync("t3","t3a");
+            db.removeSync("t1b");
+        });
+        await db.put("a",[1,2,3,4,5],null,1);
+        await db.put(false,[1,2],null,2);
+        console.log([...db.getKeys()]);
+        db.getRange({reverse:true,versions:true,offset:2}).filter(({key,value}) => key[0]==="a").forEach((entry) => console.log(entry));
+        db.getRange({start:[1],end:"t1a-",versions:true}).forEach((entry) => console.log(entry));
+        await db.close();
+    </script>
+</body>
+</html>
+
