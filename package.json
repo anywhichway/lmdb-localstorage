@@ -2,7 +2,7 @@
   "name": "lmdb-localstorage",
   "version": "0.0.1",
   "description": "A browser localStorage implementation of the NodeJS lmdb API",
-  "main": "index.js",
+  "main": "lmdb-localstorage.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
