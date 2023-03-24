@@ -1,3 +1,7 @@
+import {JSChaCha8} from "./src/js-chacha8.js";
+import {LZUTF8} from "./src/lzutf8.js";
+import {EventEmitter} from "./src/event-emitter.js"
+
 const stringify = (_,value) => {
     if(typeof(value)==="symbol") return value.toString();
     return value;
@@ -11,17 +15,19 @@ const parse = (key,value) => {
     return value;
 }
 
-const commit = (transaction=[]) => {
+const commit = (transaction=[],asynchronous) => {
     const previous = {}, keysAdded = [], keysRemoved = [];
     try {
         for(let item of transaction) {
             let [key,value,version,ifVersion,db] = item;
-            const {database,state,keys,fullName,useVersions} = db;
+            const {database,state,keys,fullName,useVersions,encryptionKey,cache} = db,
+                store = db.store = cache ? state : {};
             previous[fullName] ||= {};
             const skey = JSON.stringify(key,stringify),
                 addKeys = state[skey]==null,
-                entry = previous[fullName][skey] = {state,entry:database.getEntry(key)};
-            if(value!=null) {
+                entry = database.getEntry(key);
+            previous[fullName][skey] = {store,entry};
+            if(value!=null && entry) {
                 if(useVersions) {
                     if(ifVersion && entry.version!==ifVersion) {
                         continue;
@@ -32,44 +38,72 @@ const commit = (transaction=[]) => {
                 }
                 if(!version) version = entry.version || 1;
             }
-            state[skey] = { value, version };
+            store[skey] = { value, version };
             if(value==null) {
-                keysRemoved.push([key,keys]);
-                const index = findIndex(key,keys);
-                if(index!=null) keys.splice(index,1);
+                keysRemoved.push([key,db]);
+                if(cache) {
+                    const index = findIndex(key,keys);
+                    if(index!=null) keys.splice(index,1);
+                }
             } else if(addKeys) {
-                keysAdded.push([key,keys]); // getEntry above will have added key to keys and sorted if necessary
+                keysAdded.push([key,db]); // getEntry above will have added key to keys and sorted if necessary
             }
             TRANSACTIONS.dirty[fullName] ||= {};
-            TRANSACTIONS.dirty[fullName][skey] ||= state;
+            TRANSACTIONS.dirty[fullName][skey] ||= db;
         }
+        TRANSACTIONS.db.emit("beforecommit");
     } catch(e) {
-        Object.values(previous).forEach((database) => Object.entries(database).forEach(([key,value]) => value.state[key] = value.entry));
-        keysAdded.forEach(([added,keys]) => {
-            const index = findIndex(added,keys);
-            if(index!=null) keys.splice(index,1);
+        Object.values(previous).forEach((database) => Object.entries(database).forEach(([key,value]) => {
+            if(value.entry==null) {
+                delete value.store[key];
+            } else {
+                value.store[key] = value.entry
+            }
+        }));
+        keysAdded.forEach(([added,db]) => {
+            const {keys,cache} = db;
+            if(cache) {
+                const index = findIndex(added, keys);
+                if (index != null) keys.splice(index, 1);
+            }
         })
-        keysRemoved.forEach(([removed,keys]) => {
-            const index = insortIndex(removed,keys)
-            if(index!=null) keys.splice(index,0,removed);
+        keysRemoved.forEach(([removed,db]) => {
+            const {keys,cache} = db;
+            if(cache) {
+                const index = insortIndex(removed, keys)
+                if (index != null) keys.splice(index, 0, removed);
+            }
         })
         throw e;
     } finally {
         if(TRANSACTIONS.length===0) {
-            Object.entries(TRANSACTIONS.dirty).forEach(([fullName,keys]) => {
-                Object.entries(keys).forEach(([key,state]) => {
-                    const entry = state[key];
-                    if(entry.value===null) {
-                        delete state[key];
-                        localStorage.removeItem(fullName+":"+key);
-                    } else {
-                        localStorage.setItem(fullName+":"+key,JSON.stringify(entry));
-                    }
+            const f = () => {
+                Object.entries(TRANSACTIONS.dirty).forEach(([fullName,keys]) => {
+                    Object.entries(keys).forEach(([key,db]) => {
+                        const {state,keys,encryptionKey,compression,cache,store} = db;
+                        const entry = store[key];
+                        if(entry.value===null) {
+                            localStorage.removeItem(fullName+":"+key);
+                            delete state[key];
+                            if(!cache) {
+                                key = JSON.parse(key,parse);
+                                const index = findIndex(key,keys);
+                                if(index!=null) keys.splice(index,1);
+                            }
+                        } else {
+                            localStorage.setItem(fullName+":"+key,conditionalEncrypt(conditionalCompress(JSON.stringify(entry),compression),encryptionKey));
+                            if(cache) state[key] = entry;
+                            key = JSON.parse(key,parse);
+                            const index = insortIndex(key,keys);
+                            if(index!=null) keys.splice(index,0,key);
+                        }
+                    })
                 })
-            })
-            TRANSACTIONS.dirty = {};
+                TRANSACTIONS.dirty = {};
+            }
+            return asynchronous ? new Promise((resolve) => setTimeout(() => { resolve(f()); })) : f();
         } else {
-            commit(TRANSACTIONS.pop())
+            commit(TRANSACTIONS.shift());
         }
     }
 }
@@ -185,6 +219,22 @@ const conditionalReverse = (array,reverse) => {
     return array;
 }
 
+const conditionalEncrypt = (string,encryptionKey) => {
+    return typeof(string)==="string" && encryptionKey ? new JSChaCha8(encryptionKey,NONCE).encrypt(new TextEncoder().encode(string)) : string;
+}
+
+const conditionalDecrypt = (string,encryptionKey) => {
+    return typeof(string)==="string" && encryptionKey ? new JSChaCha8(encryptionKey,NONCE).decrypt(new TextEncoder().encode(string)) : string;
+}
+
+const conditionalCompress = (string,compression) => {
+    return  typeof(string)==="string" && compression ? LZUTF8.compress(string) : string;
+}
+
+function conditionalDecompress(string,compression) {
+    return  typeof(string)==="string" && compression ? LZUTF8.decompress(string) : string;
+}
+
 function reduce(item,reducers)  {
     let reducer;
     while(reducer = reducers.shift()) {
@@ -211,7 +261,9 @@ let TRANSACTIONS = [];
 
 const CHILDREN = [];
 
-class LMDBLocalStorage {
+const NONCE =  new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12]);
+
+class LMDBLocalStorage extends EventEmitter {
 
     #keys = [];
 
@@ -223,17 +275,20 @@ class LMDBLocalStorage {
 
     #state = {};
 
-    #transactionLock;
-
-    #transactions = [];
-
     #useVersions;
+
+    #encryptionKey;
+
+    #compression;
+
+    #cache;
 
     #currentTransaction() {
         return TRANSACTIONS[TRANSACTIONS.length-1];
     }
 
-    constructor({name,path,useVersions}={}) {
+    constructor({name,path,useVersions,encryptionKey,compression,cache}={}) {
+        super();
         this.#path = path;
         this.#fullName = path + "/" + name;
         this.#state = Object.keys(localStorage).reduce((state,key) => {
@@ -247,6 +302,9 @@ class LMDBLocalStorage {
         this.#keys.sort(sort);
         TRANSACTIONS.dirty = {};
         this.#useVersions = useVersions;
+        this.#encryptionKey = encryptionKey ? new TextEncoder().encode(encryptionKey.padEnd(32,"!")).slice(0,32) : undefined;
+        this.#compression = compression;
+        this.#cache = cache;
     }
 
     async childTransaction(callback) {
@@ -298,19 +356,13 @@ class LMDBLocalStorage {
     }
 
     async commited() {
-        if(this.#transactionLock) {
-            return TRANSACTION_LOCK.then(() => {})
-        }
-        return Promise.resolve();
+        return TRANSACTION_LOCK ? TRANSACTION_LOCK.then(() => {}): Promise.resolve();
     }
 
     doesExist(key,valueOrVersion) {
         const entry = this.getEntry(key);
         if(!entry) return false;
-        if(this.#useVersions) {
-            return entry.version === valueOrVersion;
-        }
-        return entry.value === valueOrVersion
+        return this.#useVersions ? entry.version === valueOrVersion : entry.value === valueOrVersion
     }
 
     async drop() {
@@ -328,26 +380,33 @@ class LMDBLocalStorage {
     }
 
     async flushed() {
-        if(this.#transactionLock) {
-            return TRANSACTION_LOCK.then(() => {})
-        }
-        return Promise.resolve();
+        return TRANSACTION_LOCK ? TRANSACTION_LOCK.then(() => {}) : Promise.resolve();
     }
 
     get(key) {
         const entry = this.getEntry(key);
-        this.#lastVersion = entry.version;
-        return entry.value==null ? undefined : entry.value;
+        if(entry) {
+            this.#lastVersion = entry.version;
+            return entry.value;
+        }
     }
 
     getEntry(key) {
         if(key==null) throw new TypeError(`key cannot be null or undefined`);
         const skey = JSON.stringify(key,stringify);
-        if(this.#state[key] == null) {
+        if(this.#state[skey]!=undefined) return this.#state[skey];
+        let entry;
+        try {
+            entry = JSON.parse(conditionalDecompress(conditionalDecrypt(localStorage.getItem(this.#fullName + ":" + skey),this.#encryptionKey),this.#compression)||"null");
+        } catch(e) {
+            console.warn("Error parsing database entry:" + e);
+        }
+        if(this.#cache && entry) {
+            this.#state[key] = entry;
             const index = insortIndex(key,this.#keys);
             if(index!=null) this.#keys.splice(index,0,key);
         }
-        return this.#state[skey]!=undefined ? this.#state[skey] :  this.#state[skey] = JSON.parse(localStorage.getItem(this.#fullName + ":" + skey)||"{}");
+        return entry==null ? undefined : entry;
     }
 
     getKeys({start,end,limit=Infinity,offset=0,reverse,versions,snapshot}={}) {
@@ -447,19 +506,26 @@ class LMDBLocalStorage {
     }
 
     async put(key,value,version,ifVersion) {
-        return this.putSync(key,value,version,ifVersion);
+        if(key==null) throw new TypeError(`key cannot be null or undefined`);
+        if(value===undefined) throw new TypeError(`value cannot be undefined`);
+        const transaction = this.#currentTransaction(),
+            db = {database:this,state:this.#state,keys:this.#keys,fullName:this.#fullName,useVersions:this.#useVersions,encryptionKey:this.#encryptionKey,compression:this.#compression,cache:this.#cache};
+        if(transaction) {
+            transaction.push([key,value,version,ifVersion,db]);
+        } else {
+            return commit([[key,value,version,ifVersion,db]],true);
+        }
     }
     putSync(key,value,version,ifVersion) {
         if(key==null) throw new TypeError(`key cannot be null or undefined`);
         if(value===undefined) throw new TypeError(`value cannot be undefined`);
         const transaction = this.#currentTransaction(),
-            db = {database:this,state:this.#state,keys:this.#keys,fullName:this.#fullName,useVersions:this.#useVersions};
+            db = {database:this,state:this.#state,keys:this.#keys,fullName:this.#fullName,useVersions:this.#useVersions,encryptionKey:this.#encryptionKey,compression:this.#compression,cache:this.#cache};
         if(transaction) {
             transaction.push([key,value,version,ifVersion,db]);
         } else {
-            return commit([[key,value,version,ifVersion,db]],TRANSACTIONS);
+            return commit([[key,value,version,ifVersion,db]]);
         }
-        return true;
     }
     async remove(key,ifVersion) {
         return this.removeSync(key,ifVersion);
@@ -467,25 +533,25 @@ class LMDBLocalStorage {
     removeSync(key,ifVersion) {
         if(key==null) throw new TypeError(`key cannot be null or undefined`);
         const transaction = this.#currentTransaction(),
-            db = {database:this,state:this.#state,keys:this.#keys,fullName:this.#fullName,useVersions:this.#useVersions};
+            db = {database:this,state:this.#state,keys:this.#keys,fullName:this.#fullName,useVersions:this.#useVersions,encryptionKey:this.#encryptionKey,compression:this.#compression,cache:this.#cache};
         if(transaction) {
             transaction.push([key,null,null,ifVersion,db]);
         } else {
-            return commit([[key,null,null,ifVersion,db]],TRANSACTIONS);
+            return commit([[key,null,null,ifVersion,db]]);
         }
         return true;
     }
     async transaction(callback) {
         const promise =  new Promise(async (resolve,reject) => {
-            if(this.#transactionLock) {
+            if(TRANSACTION_LOCK) {
                 try {
-                    awaitTRANSACTION_LOCK;
+                    await TRANSACTION_LOCK;
                 } catch(e) {
 
                 }
             }
             TRANSACTIONS.push([]);
-            let value;
+            let value, rejected;
             try {
                 value = await callback();
                 if(value===ABORT) {
@@ -493,15 +559,16 @@ class LMDBLocalStorage {
                 }
             } catch(e) {
                 TRANSACTIONS.pop();
-                TRANSACTION_LOCK = undefined;
                 reject(e);
-                return;
-            }
-            try {
-                commit(TRANSACTIONS.pop(),TRANSACTIONS);
-                resolve(value);
-            } catch(e) {
-                reject(e);
+            } finally {
+                try {
+                    commit(TRANSACTIONS.shift());
+                    TRANSACTION_LOCK = undefined;
+                    if(!rejected) resolve(value);
+                } catch(e) {
+                    TRANSACTION_LOCK = undefined;
+                    reject(e);
+                }
             }
         });
         TRANSACTION_LOCK = promise;
@@ -527,11 +594,11 @@ class LMDBLocalStorage {
                     TRANSACTIONS.pop();
                     throw new Error("Transaction aborted");
                 }
-                commit(TRANSACTIONS.pop(),TRANSACTIONS);
+                commit(TRANSACTIONS.shift());
                 return value;
             })
         }
-        commit(TRANSACTIONS.pop(),TRANSACTIONS);
+        commit(TRANSACTIONS.shift());
         return value;
     }
 }
@@ -543,7 +610,7 @@ const open = (path=null,options={}) => {
         options.path = path;
     }
     options.name ||= null;
-    return new LMDBLocalStorage(options);
+    return TRANSACTIONS.db = new LMDBLocalStorage(options);
 }
 const ABORT = Object.freeze({});
 

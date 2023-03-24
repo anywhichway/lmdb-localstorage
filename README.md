@@ -1,12 +1,22 @@
 # lmdb-localstorage
 
-A browser localStorage implementation of the NodeJS lmdb API.
+A browser localStorage implementation of the NodeJS [lmdb](https://www.npmjs.com/package/lmdb) API.
 
-This is ALPHA software.
+This is ALPHA software. Unit tests not yet in place.
+
+# Rationale
+
+I personally prefer isomorphic programming and lmdb is not available in the browser. `localStorage` provides a synchronous API that maps to the synchronous read approach of [lmdb](https://www.npmjs.com/package/lmdb).
+
+I will create an async only version using `indexedDB` as a back-end given sufficient interest.
 
 # Installation
 
+```
 npm install lmdb-localstorage
+```
+
+Copy the file `node_modules/lmdb-localstorage/lmdb-localstorage.js' and files in `node_modules/lmdb-localstorage/src' to you preferred location.
 
 # Usage
 
@@ -16,9 +26,9 @@ npm install lmdb-localstorage
 </script>
 ```
 
-Except for documented exceptions below, see the documentation for LMDB at [https://github.com/kriszyp/lmdb-js](https://github.com/kriszyp/lmdb-js).
+Except for documented exceptions below, see the documentation for LMDB at [https://github.com/kriszyp/lmdb-js](https://github.com/kriszyp/lmdb-js) for how to use.
 
-## Unsupported/Under Development DB Options
+# Unsupported/Differences/Under Development DB Options
 
 `encoding` - The only encoding supported is `json`, so the option is ignored.
 
@@ -26,9 +36,11 @@ Except for documented exceptions below, see the documentation for LMDB at [https
 
 `sharedStructuresKey` - Not supported because `msgpack` is not supported.
 
-`compression` - Compression is under development.
+`compression` - `true` or `false` only, configurable options under development.
 
-`cache` - Caching is currently used and can't be turned off and has no expiration. Improvements are under development.
+`cache` - `true` or `false` only, configurable options under development.
+
+`useVersions` - The standard documentation says "Set this to true if you will be setting version numbers on the entries in the database. Note that you can not change this flag once a database has entries in it (or they won't be read correctly)". For `lmdb-localstorage` turning versions off after initial use does not break the database, they simply won't be used.
 
 `key-encoding` - `ordered-binary` (the LMDB default) is currently simulated and the sole options, values are ignored.
 
@@ -48,19 +60,24 @@ Except for documented exceptions below, see the documentation for LMDB at [https
 
 `pageSize` - Not supported. Underlying `localStorage` does not support.
 
-`eventTurnBatching` - Unlike the the core LMDB package, this defaults to `false`.
-
-`encryptionKey` - Not supported. Under development.
+`eventTurnBatching` - Unlike the core LMDB package, this defaults to `false` and `true` is not supported.
 
 `commitDelay` - Not supported. Ignored.
 
 `LMDB Flags` - None of the LMDB environment flags are supported.
 
-## Unsupported Methods
+# Unsupported/Under Development Methods
 
 `db.getValues(key, options?: RangeOptions): Iterable<any>` - Not supported because `dupSort`, i.e. duplicate entries per key are not currently supported. Under development.
 
+# Events
+
+As an EventEmitter `lmdb-localstorage` has limitations as documented at [eventemitter3](https://www.npmjs.com/package/eventemitter3).
+
+`beforecommit` - supported
 
 # Change History (Reverse Chronological Order)
+
+2023-03-25 v0.0.2 Added [ChaCha8](https://www.npmjs.com/package/js-chacha8) encryption, cache control, compression control, event emitting.
 
 2023-03-24 v0.0.1 First public release

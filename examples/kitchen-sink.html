@@ -5,8 +5,9 @@
 
         import {open, ABORT} from "../lmdb-localstorage.js"
 
-        const db = open("dummy",{useVersions:true}),
+        const db = open("dummy",{useVersions:true,encryptionKey:"my password",cache:true}),
             db2 = db.openDB("child");
+        db.on("beforecommit",() => console.log("commiting..."));
         await db.clearAsync();
         await db2.clearAsync();
         await db.put(true,1);
@@ -14,7 +15,8 @@
         await db.put("a",[1,2,3]);
         await db.put(Symbol.for('a symbol'),"a symbol");
         await db.put(false,[1,2]);
-        await db.put(1,1);
+        const v1 =  db.put(1,1);
+        console.log(db.get(1),await v1,db.get(1));
         await db.put([1,"a"],"1a");
         await db.put([1,2],"12");
         await db.put([1,"b"],"1b");
@@ -67,6 +69,7 @@
         await db.put("a",[1,2,3,4,5],null,1);
         await db.put(false,[1,2],null,2);
         console.log([...db.getKeys()]);
+        //console.log(await db.commited().then(() => console.log("commited")));
         db.getRange({reverse:true,versions:true,offset:2}).filter(({key,value}) => key[0]==="a").forEach((entry) => console.log(entry));
         db.getRange({start:[1],end:"t1a-",versions:true}).forEach((entry) => console.log(entry));
         await db.close();

@@ -1,6 +1,6 @@
 {
   "name": "lmdb-localstorage",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "A browser localStorage implementation of the NodeJS lmdb API",
   "main": "lmdb-localstorage.js",
   "scripts": {
